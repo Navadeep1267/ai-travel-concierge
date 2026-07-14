@@ -3,3 +3,5 @@ check_models.py
 .streamlit/secrets.toml
 __pycache__/
 *.pyc
+.env
+.streamlit/secrets.toml
