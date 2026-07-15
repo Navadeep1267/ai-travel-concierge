@@ -1,7 +1,10 @@
 .env
-check_models.py
 .streamlit/secrets.toml
+check_models.py
+venv/
 __pycache__/
 *.pyc
-.env
-.streamlit/secrets.toml
+*.db
+logs/
+.coverage
+.pytest_cache/
