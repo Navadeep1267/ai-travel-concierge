@@ -1,23 +1,26 @@
+from __future__ import annotations
+
+import uuid
 from pathlib import Path
 
 import streamlit as st
 from dotenv import dotenv_values
 
+from agent.graph import build_travel_graph, run_travel_graph
+
 
 st.set_page_config(
-    page_title="AI Travel Agent",
+    page_title="Advanced AI Travel Agent",
     page_icon="🤖",
     layout="wide",
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-ENV_FILE = PROJECT_ROOT / ".env"
-
-local_config = dotenv_values(ENV_FILE)
+LOCAL_CONFIG = dotenv_values(PROJECT_ROOT / ".env")
 
 
 def get_setting(name: str) -> str:
-    """Read Streamlit Cloud secrets, then the local .env file."""
+    """Read configuration from Streamlit Cloud or local .env."""
     try:
         cloud_value = st.secrets.get(name, "")
     except Exception:
@@ -26,132 +29,217 @@ def get_setting(name: str) -> str:
     if cloud_value:
         return str(cloud_value).strip()
 
-    return str(local_config.get(name, "") or "").strip()
+    return str(LOCAL_CONFIG.get(name, "") or "").strip()
 
 
 api_key = get_setting("GEMINI_API_KEY")
 model_name = get_setting("GEMINI_MODEL")
-st.caption(f"Configuration file: {ENV_FILE}")
-st.caption(f"File exists: {ENV_FILE.exists()}")
-st.caption(f"API key loaded: {'Yes' if api_key else 'No'}")
-st.caption(f"Model loaded: {model_name or 'No'}")
 
 
-st.title("🤖 AI Travel Agent")
+st.title("🤖 Advanced AI Travel Agent")
+
 st.write(
-    "Ask about destinations, attractions, weather, packing, "
-    "and travel planning."
+    "LangGraph travel agent with web search, live weather, "
+    "country information, retries, state management and monitoring."
 )
 
-col1, col2 = st.columns(2)
+column1, column2, column3 = st.columns(3)
 
-col1.metric(
-    "Gemini API key",
+column1.metric(
+    "Gemini API",
     "Loaded" if api_key else "Missing",
 )
 
-col2.metric(
+column2.metric(
     "Gemini model",
     model_name if model_name else "Missing",
+)
+
+column3.metric(
+    "Available tools",
+    "3",
 )
 
 
 if not api_key:
     st.error(
-        "GEMINI_API_KEY is missing. Add it to the .env file."
+        "GEMINI_API_KEY is missing from .env "
+        "or Streamlit Cloud secrets."
     )
     st.stop()
 
 if not model_name:
     st.error(
-        "GEMINI_MODEL is missing. Add it to the .env file."
+        "GEMINI_MODEL is missing from .env "
+        "or Streamlit Cloud secrets."
     )
     st.stop()
 
 
-try:
-    from agent.travel_agent import run_travel_agent
+if "advanced_thread_id" not in st.session_state:
+    st.session_state.advanced_thread_id = str(uuid.uuid4())
 
-except Exception as error:
-    st.error("Unable to import the Travel Agent module.")
-    st.code(f"{type(error).__name__}: {error}")
-    st.stop()
+if "advanced_messages" not in st.session_state:
+    st.session_state.advanced_messages = []
+
+if "advanced_graph" not in st.session_state:
+    try:
+        st.session_state.advanced_graph = build_travel_graph(
+            api_key=api_key,
+            model_name=model_name,
+        )
+    except Exception as error:
+        st.error("The LangGraph workflow could not be created.")
+        st.code(f"{type(error).__name__}: {error}")
+        st.stop()
 
 
 with st.sidebar:
-    st.header("Available Tools")
-    st.success("🌐 DuckDuckGo Web Search")
-    st.success("🌤️ Open-Meteo Weather API")
+    st.header("Track B Features")
+
+    st.write("✅ LangGraph workflow")
+    st.write("✅ Web search")
+    st.write("✅ Live weather")
+    st.write("✅ Country information")
+    st.write("✅ Automatic retries")
+    st.write("✅ State management")
+    st.write("✅ Performance monitoring")
+
+    if st.button("Clear conversation"):
+        st.session_state.advanced_messages = []
+        st.session_state.advanced_thread_id = str(uuid.uuid4())
+        st.rerun()
 
 
-example = st.selectbox(
+for message in st.session_state.advanced_messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+        tools = message.get("tools", [])
+
+        if tools:
+            with st.expander("Tools used"):
+                for tool_name in tools:
+                    st.write(f"• `{tool_name}`")
+
+
+example_question = st.selectbox(
     "Example question",
     [
         "Choose an example",
-        "What is the current weather in Hyderabad?",
-        "Find the best tourist attractions in Goa.",
         (
-            "Plan a 2-day trip to Goa. Search for attractions "
-            "and check the current weather."
+            "Plan a 3-day trip to Japan. Search for attractions, "
+            "check the weather, provide country and currency "
+            "information, and give packing advice."
+        ),
+        (
+            "Check the current weather in Hyderabad and "
+            "tell me what to pack."
+        ),
+        (
+            "Search for the best tourist attractions in Jaipur "
+            "and include source links."
         ),
     ],
 )
 
-default_question = ""
-
-if example != "Choose an example":
-    default_question = example
+if example_question != "Choose an example":
+    st.info(f"Copy this question into the chat box:\n\n{example_question}")
 
 
-with st.form("travel_agent_form"):
-    question = st.text_area(
-        "Ask the Travel Agent",
-        value=default_question,
-        height=120,
+question = st.chat_input("Ask the Advanced AI Travel Agent")
+
+
+if question:
+    st.session_state.advanced_messages.append(
+        {
+            "role": "user",
+            "content": question,
+        }
     )
 
-    submit = st.form_submit_button("Ask Travel Agent")
+    with st.chat_message("user"):
+        st.markdown(question)
 
-
-if submit:
-    if not question.strip():
-        st.warning("Please enter a travel question.")
-
-    else:
-        with st.spinner("The agent is selecting tools..."):
+    with st.chat_message("assistant"):
+        with st.spinner(
+            "LangGraph is planning and calling travel tools..."
+        ):
             try:
-                answer, tool_history = run_travel_agent(
+                result = run_travel_graph(
+                    graph=st.session_state.advanced_graph,
                     user_query=question,
-                    api_key=api_key,
-                    model_name=model_name,
+                    thread_id=st.session_state.advanced_thread_id,
+                    message_history=st.session_state.advanced_messages,
                 )
 
-                st.subheader("Agent Response")
+                answer = result.get(
+                    "final_answer",
+                    "No answer was generated.",
+                )
+
+                selected_tools = [
+                    tool_call.get("name", "")
+                    for tool_call in result.get("selected_tools", [])
+                    if tool_call.get("name")
+                ]
+
                 st.markdown(answer)
 
-                if tool_history:
-                    st.subheader("Tools Used")
+                metric1, metric2, metric3 = st.columns(3)
 
-                    for index, event in enumerate(
-                        tool_history,
-                        start=1,
-                    ):
-                        with st.expander(
-                            f"Tool {index}: {event['tool']}",
-                            expanded=True,
-                        ):
-                            st.write("Arguments")
-                            st.json(event["arguments"])
+                metric1.metric(
+                    "Tools used",
+                    len(selected_tools),
+                )
 
-                            st.write("Result")
-                            st.code(event["result"])
-                else:
-                    st.info(
-                        "The model answered without calling a tool."
-                    )
+                metric2.metric(
+                    "Retries",
+                    result.get("retry_count", 0),
+                )
+
+                metric3.metric(
+                    "Response time",
+                    f"{result.get('total_duration', 0):.2f}s",
+                )
+
+                with st.expander(
+                    "View workflow details",
+                    expanded=True,
+                ):
+                    st.write("### Selected tools")
+
+                    for tool_name in selected_tools:
+                        st.write(f"• `{tool_name}`")
+
+                    st.write("### Tool results")
+
+                    for tool_name, tool_result in result.get(
+                        "tool_results",
+                        {},
+                    ).items():
+                        st.write(f"#### {tool_name}")
+                        st.code(tool_result)
+
+                    errors = result.get("errors", [])
+
+                    if errors:
+                        st.write("### Handled errors")
+
+                        for error in errors:
+                            st.warning(error)
+
+                st.session_state.advanced_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": answer,
+                        "tools": selected_tools,
+                    }
+                )
 
             except Exception as error:
                 st.error(
-                    "The Travel Agent could not complete the request."
+                    "The Advanced Travel Agent could not complete "
+                    "the request."
                 )
                 st.code(f"{type(error).__name__}: {error}")
