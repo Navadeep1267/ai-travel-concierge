@@ -9,31 +9,32 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 
 from agent.state import TravelAgentState
 from monitoring.logger import record_event
-from tools.travel_tools import TOOL_MAP, TRAVEL_TOOLS
+from tools.travel_tools import TOOL_MAP
 
 
-PLANNER_PROMPT = """
-You are the planning component of an AI Travel Concierge.
+FINAL_RESPONSE_PROMPT = """
+You are an accurate AI Travel Concierge.
 
-Choose all tools required to answer the user's request.
+Create a clear and useful travel response using only the verified tool
+results provided to you.
 
-Available tools:
-- search_web: attractions, restaurants, tourism and current travel facts
-- get_weather: current weather, forecast, rain and packing advice
-- get_country_information: capital, currency, languages, region and time zones
-
-Use multiple tools when necessary.
-Do not invent current information.
+Rules:
+- Do not invent current information.
+- Include source URLs returned by the web-search tool.
+- Mention unavailable information clearly.
+- Give practical itinerary and packing advice.
+- Use readable headings and short paragraphs.
+- Do not claim that a failed tool returned valid information.
 """
 
 
 def content_to_text(content: Any) -> str:
-    """Convert a model response into readable text."""
+    """Convert a Gemini response into readable text."""
     if isinstance(content, str):
         return content
 
     if isinstance(content, list):
-        parts = []
+        parts: list[str] = []
 
         for item in content:
             if isinstance(item, dict):
@@ -50,15 +51,19 @@ def content_to_text(content: Any) -> str:
 
 
 def guess_place(query: str) -> str:
-    """Try to extract a destination from the user's question."""
+    """Extract a likely destination from the user's question."""
     patterns = [
+        r"(?:trip|travel|journey|visit)\s+to\s+([A-Za-z .'-]+)",
         r"(?:weather|forecast)\s+(?:in|for)\s+([A-Za-z .'-]+)",
-        r"(?:trip|travel)\s+to\s+([A-Za-z .'-]+)",
-        r"(?:visit|visiting)\s+([A-Za-z .'-]+)",
+        r"(?:visiting|visit)\s+([A-Za-z .'-]+)",
     ]
 
     for pattern in patterns:
-        match = re.search(pattern, query, flags=re.IGNORECASE)
+        match = re.search(
+            pattern,
+            query,
+            flags=re.IGNORECASE,
+        )
 
         if not match:
             continue
@@ -66,7 +71,10 @@ def guess_place(query: str) -> str:
         place = match.group(1)
 
         place = re.split(
-            r"\b(?:and|with|check|search|give|provide|include)\b",
+            (
+                r"\b(?:and|with|check|search|find|give|provide|"
+                r"include|tell|show|plan)\b"
+            ),
             place,
             maxsplit=1,
             flags=re.IGNORECASE,
@@ -77,13 +85,26 @@ def guess_place(query: str) -> str:
         if place:
             return place
 
+    words = query.strip().split()
+
+    if words:
+        return " ".join(words[-3:]).strip(" ,.-")
+
     return query.strip()
 
 
-def fallback_tool_calls(query: str) -> list[dict[str, Any]]:
-    """Select tools using keywords when model planning is unavailable."""
+def fallback_tool_calls(
+    query: str,
+) -> list[dict[str, Any]]:
+    """
+    Select tools using keywords.
+
+    This planner does not call Gemini, which reduces API usage
+    and avoids unnecessary quota errors.
+    """
     lowercase_query = query.lower()
     place = guess_place(query)
+
     tool_calls: list[dict[str, Any]] = []
 
     weather_words = {
@@ -91,14 +112,17 @@ def fallback_tool_calls(query: str) -> list[dict[str, Any]]:
         "temperature",
         "rain",
         "forecast",
+        "climate",
         "packing",
         "pack",
+        "umbrella",
     }
 
     search_words = {
         "attraction",
         "attractions",
         "tourist",
+        "tourism",
         "restaurant",
         "restaurants",
         "places",
@@ -106,6 +130,13 @@ def fallback_tool_calls(query: str) -> list[dict[str, Any]]:
         "trip",
         "itinerary",
         "travel",
+        "visit",
+        "hotel",
+        "hotels",
+        "activity",
+        "activities",
+        "search",
+        "find",
     }
 
     country_words = {
@@ -115,31 +146,48 @@ def fallback_tool_calls(query: str) -> list[dict[str, Any]]:
         "language",
         "languages",
         "region",
+        "subregion",
         "timezone",
         "time zone",
+        "international",
     }
 
-    if any(word in lowercase_query for word in weather_words):
+    if any(
+        word in lowercase_query
+        for word in weather_words
+    ):
         tool_calls.append(
             {
                 "name": "get_weather",
-                "args": {"city": place},
+                "args": {
+                    "city": place,
+                },
             }
         )
 
-    if any(word in lowercase_query for word in search_words):
+    if any(
+        word in lowercase_query
+        for word in search_words
+    ):
         tool_calls.append(
             {
                 "name": "search_web",
-                "args": {"query": query},
+                "args": {
+                    "query": query,
+                },
             }
         )
 
-    if any(word in lowercase_query for word in country_words):
+    if any(
+        word in lowercase_query
+        for word in country_words
+    ):
         tool_calls.append(
             {
                 "name": "get_country_information",
-                "args": {"country": place},
+                "args": {
+                    "country": place,
+                },
             }
         )
 
@@ -147,7 +195,9 @@ def fallback_tool_calls(query: str) -> list[dict[str, Any]]:
         tool_calls.append(
             {
                 "name": "search_web",
-                "args": {"query": query},
+                "args": {
+                    "query": query,
+                },
             }
         )
 
@@ -155,34 +205,44 @@ def fallback_tool_calls(query: str) -> list[dict[str, Any]]:
 
 
 def merge_tool_calls(
-    model_calls: list[dict[str, Any]],
-    fallback_calls: list[dict[str, Any]],
+    first_calls: list[dict[str, Any]],
+    second_calls: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Combine tool calls while removing duplicates."""
+    """Combine tool calls while removing duplicate tool names."""
     merged: list[dict[str, Any]] = []
     used_names: set[str] = set()
 
-    for call in model_calls + fallback_calls:
-        name = str(call.get("name", "")).strip()
+    for tool_call in first_calls + second_calls:
+        tool_name = str(
+            tool_call.get("name", "")
+        ).strip()
 
-        if not name or name in used_names:
+        if not tool_name:
+            continue
+
+        if tool_name in used_names:
             continue
 
         merged.append(
             {
-                "name": name,
-                "args": call.get("args", {}),
+                "name": tool_name,
+                "args": tool_call.get("args", {}),
             }
         )
 
-        used_names.add(name)
+        used_names.add(tool_name)
 
     return merged
 
 
-def execute_one_tool(tool_call: dict[str, Any]) -> str:
-    """Execute one selected LangChain tool safely."""
-    tool_name = str(tool_call.get("name", "")).strip()
+def execute_one_tool(
+    tool_call: dict[str, Any],
+) -> str:
+    """Execute one selected travel tool safely."""
+    tool_name = str(
+        tool_call.get("name", "")
+    ).strip()
+
     arguments = tool_call.get("args", {})
 
     selected_tool = TOOL_MAP.get(tool_name)
@@ -191,7 +251,8 @@ def execute_one_tool(tool_call: dict[str, Any]) -> str:
         return f"ERROR: Unknown tool '{tool_name}'."
 
     try:
-        return str(selected_tool.invoke(arguments))
+        result = selected_tool.invoke(arguments)
+        return str(result)
 
     except Exception as error:
         return (
@@ -201,8 +262,10 @@ def execute_one_tool(tool_call: dict[str, Any]) -> str:
 
 
 def is_error_result(result: str) -> bool:
-    """Check whether a tool result represents failure."""
-    return result.strip().upper().startswith("ERROR:")
+    """Check whether a tool result represents an error."""
+    return result.strip().upper().startswith(
+        "ERROR:"
+    )
 
 
 def validate_results(
@@ -212,25 +275,77 @@ def validate_results(
 ) -> str:
     """Return success, retry or failed."""
     if not results:
-        return "retry" if retry_count < max_retries else "failed"
+        if retry_count < max_retries:
+            return "retry"
 
-    failures = [
+        return "failed"
+
+    failed_results = [
         result
         for result in results.values()
         if is_error_result(result)
     ]
 
-    if not failures:
+    if not failed_results:
         return "success"
 
     # Continue when at least one tool returned useful information.
-    if len(failures) < len(results):
+    if len(failed_results) < len(results):
         return "success"
 
     if retry_count < max_retries:
         return "retry"
 
     return "failed"
+
+
+def create_fallback_answer(
+    query: str,
+    tool_results: dict[str, str],
+) -> str:
+    """
+    Create an answer without Gemini.
+
+    This is used when Gemini quota is exceeded or the model
+    is temporarily unavailable.
+    """
+    lines = [
+        "## Travel information",
+        "",
+        (
+            "The AI summary is temporarily unavailable, but the "
+            "verified tool results are shown below."
+        ),
+        "",
+        f"**Your request:** {query}",
+        "",
+    ]
+
+    for tool_name, result in tool_results.items():
+        readable_name = tool_name.replace(
+            "_",
+            " ",
+        ).title()
+
+        lines.extend(
+            [
+                f"### {readable_name}",
+                result,
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
+            "### General advice",
+            (
+                "Confirm opening times, ticket availability and "
+                "local travel restrictions before departure."
+            ),
+        ]
+    )
+
+    return "\n".join(lines)
 
 
 def create_agent_nodes(
@@ -244,56 +359,46 @@ def create_agent_nodes(
         temperature=0,
     )
 
-    model_with_tools = model.bind_tools(TRAVEL_TOOLS)
-
     def planner_node(
         state: TravelAgentState,
     ) -> dict[str, Any]:
-        query = state.get("user_query", "").strip()
-        errors = list(state.get("errors", []))
-        model_calls: list[dict[str, Any]] = []
+        """
+        Select tools without calling Gemini.
 
-        try:
-            response = model_with_tools.invoke(
-                [
-                    SystemMessage(content=PLANNER_PROMPT),
-                    HumanMessage(content=query),
-                ]
+        This saves Gemini quota and prevents planner failures
+        caused by free-tier request limits.
+        """
+        query = state.get(
+            "user_query",
+            "",
+        ).strip()
+
+        errors = list(
+            state.get(
+                "errors",
+                [],
             )
-
-            raw_calls = getattr(response, "tool_calls", None) or []
-
-            for call in raw_calls:
-                if isinstance(call, dict):
-                    model_calls.append(
-                        {
-                            "name": call.get("name", ""),
-                            "args": call.get("args", {}),
-                        }
-                    )
-
-        except Exception as error:
-            errors.append(
-                "Planner model failed. Keyword fallback planning "
-                f"was used. {type(error).__name__}: {error}"
-            )
-
-            record_event(
-                "planner_error",
-                error_type=type(error).__name__,
-            )
-
-        selected_tools = merge_tool_calls(
-            model_calls,
-            fallback_tool_calls(query),
         )
+
+        if not query:
+            errors.append(
+                "The user question is empty."
+            )
+
+            return {
+                "selected_tools": [],
+                "errors": errors,
+            }
+
+        selected_tools = fallback_tool_calls(query)
 
         record_event(
             "planner_completed",
             selected_tools=[
-                call["name"]
-                for call in selected_tools
+                tool_call["name"]
+                for tool_call in selected_tools
             ],
+            planning_mode="keyword_planner",
         )
 
         return {
@@ -304,16 +409,43 @@ def create_agent_nodes(
     def tools_node(
         state: TravelAgentState,
     ) -> dict[str, Any]:
+        """Execute all tools selected by the planner."""
         results: dict[str, str] = {}
-        errors = list(state.get("errors", []))
 
-        for tool_call in state.get("selected_tools", []):
-            tool_name = str(tool_call.get("name", ""))
+        errors = list(
+            state.get(
+                "errors",
+                [],
+            )
+        )
+
+        selected_tools = state.get(
+            "selected_tools",
+            [],
+        )
+
+        for tool_call in selected_tools:
+            tool_name = str(
+                tool_call.get(
+                    "name",
+                    "",
+                )
+            )
+
             started = time.perf_counter()
 
-            result = execute_one_tool(tool_call)
-            duration = time.perf_counter() - started
-            success = not is_error_result(result)
+            result = execute_one_tool(
+                tool_call
+            )
+
+            duration = (
+                time.perf_counter()
+                - started
+            )
+
+            success = not is_error_result(
+                result
+            )
 
             results[tool_name] = result
 
@@ -324,7 +456,10 @@ def create_agent_nodes(
                 "tool_call",
                 tool=tool_name,
                 success=success,
-                duration_seconds=round(duration, 4),
+                duration_seconds=round(
+                    duration,
+                    4,
+                ),
             )
 
         return {
@@ -335,16 +470,29 @@ def create_agent_nodes(
     def validation_node(
         state: TravelAgentState,
     ) -> dict[str, Any]:
+        """Validate tool results and choose the next action."""
         status = validate_results(
-            results=state.get("tool_results", {}),
-            retry_count=state.get("retry_count", 0),
-            max_retries=state.get("max_retries", 2),
+            results=state.get(
+                "tool_results",
+                {},
+            ),
+            retry_count=state.get(
+                "retry_count",
+                0,
+            ),
+            max_retries=state.get(
+                "max_retries",
+                2,
+            ),
         )
 
         record_event(
             "validation_completed",
             status=status,
-            retry_count=state.get("retry_count", 0),
+            retry_count=state.get(
+                "retry_count",
+                0,
+            ),
         )
 
         return {
@@ -354,88 +502,146 @@ def create_agent_nodes(
     def retry_node(
         state: TravelAgentState,
     ) -> dict[str, Any]:
-        retry_count = state.get("retry_count", 0) + 1
+        """Retry failed tool calls."""
+        retry_count = (
+            state.get(
+                "retry_count",
+                0,
+            )
+            + 1
+        )
+
+        selected_tools = fallback_tool_calls(
+            state.get(
+                "user_query",
+                "",
+            )
+        )
 
         record_event(
             "agent_retry",
             retry_count=retry_count,
+            selected_tools=[
+                tool_call["name"]
+                for tool_call in selected_tools
+            ],
         )
 
         return {
             "retry_count": retry_count,
-            "selected_tools": fallback_tool_calls(
-                state.get("user_query", "")
-            ),
+            "selected_tools": selected_tools,
         }
 
     def response_node(
         state: TravelAgentState,
     ) -> dict[str, Any]:
-        query = state.get("user_query", "")
-        tool_results = state.get("tool_results", {})
+        """Generate the final answer using one Gemini call."""
+        query = state.get(
+            "user_query",
+            "",
+        )
+
+        tool_results = state.get(
+            "tool_results",
+            {},
+        )
+
+        context_sections: list[str] = []
+
+        for tool_name, result in tool_results.items():
+            context_sections.append(
+                (
+                    f"TOOL: {tool_name}\n"
+                    f"RESULT:\n{result}"
+                )
+            )
 
         context = "\n\n".join(
-            f"{tool_name}:\n{result}"
-            for tool_name, result in tool_results.items()
+            context_sections
         )
 
         prompt = f"""
-Create a clear travel answer using only the verified tool results.
-
-Rules:
-- Do not invent current facts.
-- Include source links returned by the web-search tool.
-- Clearly state when information is unavailable.
-- Give practical itinerary and packing advice.
-- Use headings and readable formatting.
-
 User request:
 {query}
 
-Tool results:
+Verified tool results:
 {context}
+
+Create the final travel response.
 """
 
         try:
             response = model.invoke(
                 [
                     SystemMessage(
-                        content=(
-                            "You are an accurate AI Travel Concierge."
-                        )
+                        content=FINAL_RESPONSE_PROMPT
                     ),
-                    HumanMessage(content=prompt),
+                    HumanMessage(
+                        content=prompt
+                    ),
                 ]
             )
 
-            answer = content_to_text(response.content).strip()
+            answer = content_to_text(
+                response.content
+            ).strip()
 
             if not answer:
-                answer = context
+                answer = create_fallback_answer(
+                    query=query,
+                    tool_results=tool_results,
+                )
 
         except Exception as error:
-            answer = (
-                "The response model was unavailable. "
-                "Verified tool results are shown below.\n\n"
-                f"{context}"
+            answer = create_fallback_answer(
+                query=query,
+                tool_results=tool_results,
             )
 
-            record_event(
-                "response_model_error",
-                error_type=type(error).__name__,
-            )
+            error_message = str(error).lower()
+
+            if (
+                "resource_exhausted"
+                in error_message
+                or "429" in error_message
+                or "quota" in error_message
+            ):
+                record_event(
+                    "response_quota_exceeded",
+                    error_type=type(
+                        error
+                    ).__name__,
+                )
+            else:
+                record_event(
+                    "response_model_error",
+                    error_type=type(
+                        error
+                    ).__name__,
+                )
 
         total_duration = (
             time.perf_counter()
-            - state.get("start_time", time.perf_counter())
+            - state.get(
+                "start_time",
+                time.perf_counter(),
+            )
         )
 
         record_event(
             "agent_completed",
             success=True,
-            duration_seconds=round(total_duration, 4),
-            tools_used=list(tool_results.keys()),
-            retry_count=state.get("retry_count", 0),
+            duration_seconds=round(
+                total_duration,
+                4,
+            ),
+            tools_used=list(
+                tool_results.keys()
+            ),
+            retry_count=state.get(
+                "retry_count",
+                0,
+            ),
         )
 
         return {
@@ -446,23 +652,33 @@ Tool results:
     def error_node(
         state: TravelAgentState,
     ) -> dict[str, Any]:
+        """Return a friendly message after all retries fail."""
         total_duration = (
             time.perf_counter()
-            - state.get("start_time", time.perf_counter())
+            - state.get(
+                "start_time",
+                time.perf_counter(),
+            )
         )
 
         record_event(
             "agent_completed",
             success=False,
-            duration_seconds=round(total_duration, 4),
-            retry_count=state.get("retry_count", 0),
+            duration_seconds=round(
+                total_duration,
+                4,
+            ),
+            retry_count=state.get(
+                "retry_count",
+                0,
+            ),
         )
 
         return {
             "final_answer": (
-                "The Travel Agent could not retrieve enough verified "
-                "information after several attempts. Check the "
-                "destination name and try again."
+                "The Travel Agent could not retrieve enough "
+                "verified information after several attempts. "
+                "Please check the destination name and try again."
             ),
             "total_duration": total_duration,
         }
@@ -480,8 +696,11 @@ Tool results:
 def route_after_validation(
     state: TravelAgentState,
 ) -> Literal["response", "retry", "error"]:
-    """Choose the next graph node after result validation."""
-    status = state.get("validation_status", "failed")
+    """Choose the next node after tool-result validation."""
+    status = state.get(
+        "validation_status",
+        "failed",
+    )
 
     if status == "success":
         return "response"
