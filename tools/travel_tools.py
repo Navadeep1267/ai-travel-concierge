@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from urllib.parse import quote
 
 import requests
 from ddgs import DDGS
@@ -12,17 +12,17 @@ WEATHER_CODES = {
     1: "Mainly clear",
     2: "Partly cloudy",
     3: "Overcast",
-    45: "Foggy",
-    48: "Foggy with frost",
+    45: "Fog",
+    48: "Fog with frost",
     51: "Light drizzle",
     53: "Moderate drizzle",
     55: "Heavy drizzle",
     61: "Light rain",
     63: "Moderate rain",
     65: "Heavy rain",
-    71: "Light snowfall",
-    73: "Moderate snowfall",
-    75: "Heavy snowfall",
+    71: "Light snow",
+    73: "Moderate snow",
+    75: "Heavy snow",
     80: "Light rain showers",
     81: "Moderate rain showers",
     82: "Heavy rain showers",
@@ -32,62 +32,46 @@ WEATHER_CODES = {
 }
 
 
-def _safe_value(values: list[Any], index: int, default: Any = "N/A") -> Any:
-    """Safely read an item from a list."""
-    if index < len(values):
-        return values[index]
-
-    return default
-
-
 @tool
 def search_web(query: str) -> str:
-    """
-    Search the web for current travel information.
+    """Search the web for current travel information and sources."""
+    query = query.strip()
 
-    Use this tool for attractions, restaurants, tourism information,
-    travel news, things to do, destination guides and current events.
-    """
-    cleaned_query = query.strip()
-
-    if not cleaned_query:
-        return "Web search error: the search query cannot be empty."
+    if not query:
+        return "ERROR: The web-search query is empty."
 
     try:
-        search_results = list(
+        results = list(
             DDGS().text(
-                cleaned_query,
+                query,
                 max_results=5,
             )
         )
 
-        if not search_results:
-            return (
-                "No web-search results were found. "
-                "Try using a clearer destination or search query."
-            )
+        if not results:
+            return "ERROR: No web-search results were found."
 
         formatted_results = []
 
-        for index, result in enumerate(search_results, start=1):
+        for number, result in enumerate(results, start=1):
             title = result.get("title", "Untitled result")
             description = (
                 result.get("body")
                 or result.get("description")
                 or "No description available."
             )
-            link = (
+            source = (
                 result.get("href")
                 or result.get("url")
-                or "No link available."
+                or "No source URL available."
             )
 
             formatted_results.append(
                 "\n".join(
                     [
-                        f"Result {index}: {title}",
+                        f"Result {number}: {title}",
                         f"Description: {description}",
-                        f"Source: {link}",
+                        f"Source: {source}",
                     ]
                 )
             )
@@ -96,68 +80,44 @@ def search_web(query: str) -> str:
 
     except Exception as error:
         return (
-            "Web search is temporarily unavailable. "
-            f"Technical details: {type(error).__name__}: {error}"
+            "ERROR: Web search is temporarily unavailable. "
+            f"{type(error).__name__}: {error}"
         )
 
 
 @tool
 def get_weather(city: str) -> str:
-    """
-    Get current weather and a short forecast for a city.
+    """Get current weather and a three-day forecast for a city."""
+    city = city.strip()
 
-    Use this tool when the user asks about temperature, rain,
-    climate, weather forecast, packing advice or travel conditions.
-    """
-    cleaned_city = city.strip()
-
-    if not cleaned_city:
-        return "Weather error: the city name cannot be empty."
-
-    geocoding_url = (
-        "https://geocoding-api.open-meteo.com/v1/search"
-    )
+    if not city:
+        return "ERROR: The city name is empty."
 
     try:
         location_response = requests.get(
-            geocoding_url,
+            "https://geocoding-api.open-meteo.com/v1/search",
             params={
-                "name": cleaned_city,
+                "name": city,
                 "count": 1,
                 "language": "en",
                 "format": "json",
             },
             timeout=15,
         )
-
         location_response.raise_for_status()
-        location_results = location_response.json().get(
-            "results",
-            [],
-        )
 
-        if not location_results:
-            return (
-                f"Weather error: no location was found for "
-                f"'{cleaned_city}'."
-            )
+        locations = location_response.json().get("results", [])
 
-        location = location_results[0]
+        if not locations:
+            return f"ERROR: No location was found for '{city}'."
 
-        latitude = location["latitude"]
-        longitude = location["longitude"]
-        location_name = location.get("name", cleaned_city)
-        country = location.get("country", "")
-
-        forecast_url = (
-            "https://api.open-meteo.com/v1/forecast"
-        )
+        location = locations[0]
 
         weather_response = requests.get(
-            forecast_url,
+            "https://api.open-meteo.com/v1/forecast",
             params={
-                "latitude": latitude,
-                "longitude": longitude,
+                "latitude": location["latitude"],
+                "longitude": location["longitude"],
                 "current": (
                     "temperature_2m,"
                     "apparent_temperature,"
@@ -175,20 +135,22 @@ def get_weather(city: str) -> str:
             },
             timeout=15,
         )
-
         weather_response.raise_for_status()
-        weather_data = weather_response.json()
 
+        weather_data = weather_response.json()
         current = weather_data.get("current", {})
         daily = weather_data.get("daily", {})
 
-        current_code = current.get("weather_code")
-        current_condition = WEATHER_CODES.get(
-            current_code,
-            f"Weather code {current_code}",
+        weather_code = current.get("weather_code")
+        condition = WEATHER_CODES.get(
+            weather_code,
+            f"Weather code {weather_code}",
         )
 
-        output_lines = [
+        location_name = location.get("name", city)
+        country = location.get("country", "")
+
+        lines = [
             f"Weather for {location_name}, {country}",
             (
                 "Current temperature: "
@@ -198,7 +160,7 @@ def get_weather(city: str) -> str:
                 "Feels like: "
                 f"{current.get('apparent_temperature', 'N/A')} °C"
             ),
-            f"Condition: {current_condition}",
+            f"Condition: {condition}",
             (
                 "Wind speed: "
                 f"{current.get('wind_speed_10m', 'N/A')} km/h"
@@ -208,63 +170,188 @@ def get_weather(city: str) -> str:
         ]
 
         dates = daily.get("time", [])
-        maximum_temperatures = daily.get(
-            "temperature_2m_max",
-            [],
-        )
-        minimum_temperatures = daily.get(
-            "temperature_2m_min",
-            [],
-        )
-        rain_probabilities = daily.get(
+        codes = daily.get("weather_code", [])
+        maximums = daily.get("temperature_2m_max", [])
+        minimums = daily.get("temperature_2m_min", [])
+        rain_values = daily.get(
             "precipitation_probability_max",
             [],
         )
-        daily_codes = daily.get("weather_code", [])
 
         for index, forecast_date in enumerate(dates):
-            daily_condition = WEATHER_CODES.get(
-                _safe_value(daily_codes, index),
-                "Unknown condition",
+            forecast_code = (
+                codes[index]
+                if index < len(codes)
+                else None
             )
 
-            maximum = _safe_value(
-                maximum_temperatures,
-                index,
-            )
-            minimum = _safe_value(
-                minimum_temperatures,
-                index,
-            )
-            rain_probability = _safe_value(
-                rain_probabilities,
-                index,
+            forecast_condition = WEATHER_CODES.get(
+                forecast_code,
+                "Unknown weather",
             )
 
-            output_lines.append(
-                (
-                    f"{forecast_date}: {daily_condition}, "
-                    f"minimum {minimum} °C, maximum {maximum} °C, "
-                    f"rain probability {rain_probability}%"
-                )
+            maximum = (
+                maximums[index]
+                if index < len(maximums)
+                else "N/A"
             )
 
-        return "\n".join(output_lines)
+            minimum = (
+                minimums[index]
+                if index < len(minimums)
+                else "N/A"
+            )
+
+            rain = (
+                rain_values[index]
+                if index < len(rain_values)
+                else "N/A"
+            )
+
+            lines.append(
+                f"{forecast_date}: {forecast_condition}, "
+                f"minimum {minimum} °C, "
+                f"maximum {maximum} °C, "
+                f"rain probability {rain}%"
+            )
+
+        return "\n".join(lines)
 
     except requests.Timeout:
-        return (
-            "Weather service timed out. "
-            "Please try again after a few seconds."
-        )
+        return "ERROR: The weather service timed out."
 
     except requests.RequestException as error:
         return (
-            "Weather service is temporarily unavailable. "
-            f"Technical details: {error}"
+            "ERROR: The weather service is unavailable. "
+            f"{error}"
         )
 
     except Exception as error:
         return (
-            "Unable to process the weather request. "
-            f"Technical details: {type(error).__name__}: {error}"
+            "ERROR: The weather request could not be processed. "
+            f"{type(error).__name__}: {error}"
         )
+
+
+@tool
+def get_country_information(country: str) -> str:
+    """Get a country's capital, currency, languages and time zones."""
+    country = country.strip()
+
+    if not country:
+        return "ERROR: The country name is empty."
+
+    try:
+        response = requests.get(
+            (
+                "https://restcountries.com/v3.1/name/"
+                f"{quote(country)}"
+            ),
+            params={
+                "fields": (
+                    "name,capital,currencies,languages,"
+                    "region,subregion,timezones"
+                )
+            },
+            timeout=15,
+        )
+        response.raise_for_status()
+
+        results = response.json()
+
+        if not results:
+            return (
+                f"ERROR: No country information was found "
+                f"for '{country}'."
+            )
+
+        information = results[0]
+
+        official_name = information.get(
+            "name",
+            {},
+        ).get("official", country)
+
+        capitals = information.get("capital", [])
+        capital = ", ".join(capitals) if capitals else "N/A"
+
+        currency_items = []
+
+        for currency_code, details in information.get(
+            "currencies",
+            {},
+        ).items():
+            currency_name = details.get(
+                "name",
+                currency_code,
+            )
+            currency_symbol = details.get("symbol", "")
+
+            currency_items.append(
+                f"{currency_name} "
+                f"({currency_code}) "
+                f"{currency_symbol}".strip()
+            )
+
+        currencies = (
+            ", ".join(currency_items)
+            if currency_items
+            else "N/A"
+        )
+
+        language_values = list(
+            information.get("languages", {}).values()
+        )
+
+        languages = (
+            ", ".join(language_values)
+            if language_values
+            else "N/A"
+        )
+
+        region = information.get("region", "N/A")
+        subregion = information.get("subregion", "N/A")
+
+        timezones = ", ".join(
+            information.get("timezones", [])
+        ) or "N/A"
+
+        return "\n".join(
+            [
+                f"Country: {official_name}",
+                f"Capital: {capital}",
+                f"Currency: {currencies}",
+                f"Languages: {languages}",
+                f"Region: {region}",
+                f"Subregion: {subregion}",
+                f"Time zones: {timezones}",
+            ]
+        )
+
+    except requests.Timeout:
+        return "ERROR: The country-information service timed out."
+
+    except requests.RequestException as error:
+        return (
+            "ERROR: The country-information service is unavailable. "
+            f"{error}"
+        )
+
+    except Exception as error:
+        return (
+            "ERROR: Country information could not be processed. "
+            f"{type(error).__name__}: {error}"
+        )
+
+
+TRAVEL_TOOLS = [
+    search_web,
+    get_weather,
+    get_country_information,
+]
+
+
+TOOL_MAP = {
+    travel_tool.name: travel_tool
+    for travel_tool in TRAVEL_TOOLS
+}
