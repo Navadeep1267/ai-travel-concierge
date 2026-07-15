@@ -5,6 +5,7 @@ from urllib.parse import quote
 import requests
 from ddgs import DDGS
 from langchain_core.tools import tool
+from countryinfo import CountryInfo
 
 
 WEATHER_CODES = {
@@ -235,90 +236,98 @@ def get_weather(city: str) -> str:
 
 @tool
 def get_country_information(country: str) -> str:
-    """Get a country's capital, currency, languages and time zones."""
-    country = country.strip()
+    """Get country, capital, currency, language and timezone details."""
+    country = country.strip().strip(".,!?")
 
     if not country:
         return "ERROR: The country name is empty."
 
     try:
-        response = requests.get(
-            (
-                "https://restcountries.com/v3.1/name/"
-                f"{quote(country)}"
-            ),
-            params={
-                "fields": (
-                    "name,capital,currencies,languages,"
-                    "region,subregion,timezones"
-                )
-            },
-            timeout=15,
-        )
-        response.raise_for_status()
+        information = CountryInfo(country).info()
 
-        results = response.json()
-
-        if not results:
+        if not information:
             return (
                 f"ERROR: No country information was found "
                 f"for '{country}'."
             )
 
-        information = results[0]
+        display_name = (
+            information.get("name")
+            or country
+        )
 
-        official_name = information.get(
-            "name",
-            {},
-        ).get("official", country)
+        capital = (
+            information.get("capital")
+            or "N/A"
+        )
 
-        capitals = information.get("capital", [])
-        capital = ", ".join(capitals) if capitals else "N/A"
-
-        currency_items = []
-
-        for currency_code, details in information.get(
+        currencies_data = information.get(
             "currencies",
-            {},
-        ).items():
-            currency_name = details.get(
-                "name",
-                currency_code,
+            [],
+        )
+
+        if isinstance(currencies_data, list):
+            currencies = (
+                ", ".join(
+                    str(currency)
+                    for currency in currencies_data
+                )
+                or "N/A"
             )
-            currency_symbol = details.get("symbol", "")
-
-            currency_items.append(
-                f"{currency_name} "
-                f"({currency_code}) "
-                f"{currency_symbol}".strip()
+        else:
+            currencies = str(
+                currencies_data or "N/A"
             )
 
-        currencies = (
-            ", ".join(currency_items)
-            if currency_items
-            else "N/A"
+        languages_data = information.get(
+            "languages",
+            [],
         )
 
-        language_values = list(
-            information.get("languages", {}).values()
+        if isinstance(languages_data, list):
+            languages = (
+                ", ".join(
+                    str(language)
+                    for language in languages_data
+                )
+                or "N/A"
+            )
+        else:
+            languages = str(
+                languages_data or "N/A"
+            )
+
+        region = str(
+            information.get("region")
+            or "N/A"
         )
 
-        languages = (
-            ", ".join(language_values)
-            if language_values
-            else "N/A"
+        subregion = str(
+            information.get("subregion")
+            or "N/A"
         )
 
-        region = information.get("region", "N/A")
-        subregion = information.get("subregion", "N/A")
+        timezone_data = information.get(
+            "timezones",
+            [],
+        )
 
-        timezones = ", ".join(
-            information.get("timezones", [])
-        ) or "N/A"
+        if isinstance(timezone_data, list):
+            timezones = (
+                ", ".join(
+                    str(timezone)
+                    for timezone in timezone_data
+                )
+                or "N/A"
+            )
+        else:
+            timezones = str(
+                timezone_data or "N/A"
+            )
 
         return "\n".join(
             [
-                f"Country: {official_name}",
+                f"Country: {display_name}",
                 f"Capital: {capital}",
                 f"Currency: {currencies}",
                 f"Languages: {languages}",
@@ -328,13 +337,10 @@ def get_country_information(country: str) -> str:
             ]
         )
 
-    except requests.Timeout:
-        return "ERROR: The country-information service timed out."
-
-    except requests.RequestException as error:
+    except KeyError:
         return (
-            "ERROR: The country-information service is unavailable. "
-            f"{error}"
+            f"ERROR: No country information was found "
+            f"for '{country}'."
         )
 
     except Exception as error:
