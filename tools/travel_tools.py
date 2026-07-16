@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from urllib.parse import quote
 
 import requests
 from ddgs import DDGS
