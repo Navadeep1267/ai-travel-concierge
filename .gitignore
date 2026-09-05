@@ -8,3 +8,9 @@ __pycache__/
 logs/
 .coverage
 .pytest_cache/
+# Local wallpaper images
+pages/*.jpg
+.env
+tools/travel_tools_backup.py
+tools/travel_tools_before_openweather.py
+tools/travel_tools_broken.py
