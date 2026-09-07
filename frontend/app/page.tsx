@@ -1,69 +1,280 @@
-import Image from "next/image";
+"use client";
+
+import { useState } from "react";
+
+type Message = {
+  role: "user" | "assistant";
+  text: string;
+};
 
 export default function Home() {
+  const [message, setMessage] = useState("");
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const sendMessage = async () => {
+    if (!message.trim() || loading) return;
+
+    const userMessage = message.trim();
+
+    // Show user's message immediately
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "user",
+        text: userMessage,
+      },
+    ]);
+
+    setMessage("");
+    setLoading(true);
+
+    try {
+      const response = await fetch("http://127.0.0.1:8000/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: userMessage,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Backend error");
+      }
+
+      // Show AI response
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: data.answer,
+        },
+      ]);
+    } catch (error) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text:
+            error instanceof Error
+              ? `⚠️ ${error.message}`
+              : "⚠️ Could not connect to the travel assistant.",
+        },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const planTokyoTrip = () => {
+    setMessage("Plan a 3-day trip to Tokyo");
+  };
+
+  const checkParisWeather = () => {
+    setMessage("What is the weather in Paris?");
+  };
+
+  const exploreJapan = () => {
+    setMessage("Give me information about Japan");
+  };
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
+    <main className="travel-app">
+      {/* NAVBAR */}
+      <header className="navbar">
+        <div className="logo">
+          <span>✈</span>
+          AI Travel Concierge
+        </div>
+
+        <nav>
+          <a href="#home">Home</a>
+          <a href="#features">Features</a>
+          <a href="#about">About</a>
+        </nav>
+      </header>
+
+      {/* HERO SECTION */}
+      <section className="hero" id="home">
+        <div className="hero-content">
+          <div className="badge">✦ AI-POWERED TRAVEL ASSISTANT</div>
+
+          <h1>
+            Your journey,
+            <br />
+            <span>intelligently planned.</span>
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+
+          <p>
+            Plan smarter trips with AI-powered recommendations, live weather,
+            destination information and web search.
           </p>
+
+          <div className="quick-actions">
+            <button onClick={planTokyoTrip}>
+              🗼 Plan a Trip
+            </button>
+
+            <button onClick={checkParisWeather}>
+              ☁ Check Weather
+            </button>
+
+            <button onClick={exploreJapan}>
+              🌍 Explore Destination
+            </button>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
+      </section>
+
+      {/* CHAT SECTION */}
+      <section className="chat-section">
+        <div className="chat-card">
+          {/* CHAT HEADER */}
+          <div className="chat-header">
+            <div>
+              <h2>Travel Assistant</h2>
+
+              <p>
+                <span className="online-dot"></span>
+                {loading ? "AI Concierge thinking..." : "AI Concierge online"}
+              </p>
+            </div>
+
+            <div className="agent-icon">✈</div>
+          </div>
+
+          {/* CHAT BODY */}
+          <div className="chat-body">
+            {messages.length === 0 ? (
+              <div className="welcome">
+                <div className="welcome-icon">🌎</div>
+
+                <h3>Where would you like to go?</h3>
+
+                <p>
+                  Ask me about destinations, weather, attractions, countries
+                  or travel planning.
+                </p>
+              </div>
+            ) : (
+              messages.map((item, index) => (
+                <div
+                  key={index}
+                  className={`message ${
+                    item.role === "user"
+                      ? "user-message"
+                      : "ai-message"
+                  }`}
+                >
+                  {item.text}
+                </div>
+              ))
+            )}
+
+            {/* LOADING MESSAGE */}
+            {loading && (
+              <div className="message ai-message">
+                ✈️ Planning your trip...
+              </div>
+            )}
+          </div>
+
+          {/* CHAT INPUT */}
+          <div className="chat-input">
+            <input
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  sendMessage();
+                }
+              }}
+              placeholder="Ask your travel assistant..."
+              disabled={loading}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+
+            <button
+              onClick={sendMessage}
+              disabled={loading || !message.trim()}
+            >
+              {loading ? "..." : "➤"}
+            </button>
+          </div>
         </div>
-      </main>
-    </div>
+      </section>
+
+      {/* FEATURES */}
+      <section className="features" id="features">
+        <div className="section-heading">
+          <span>POWERFUL CAPABILITIES</span>
+
+          <h2>Everything you need for smarter travel</h2>
+        </div>
+
+        <div className="feature-grid">
+          {/* WEB SEARCH */}
+          <div className="feature-card">
+            <div>🔎</div>
+
+            <h3>Web Search</h3>
+
+            <p>
+              Find useful and current travel information using web search.
+            </p>
+          </div>
+
+          {/* WEATHER */}
+          <div className="feature-card">
+            <div>☁️</div>
+
+            <h3>Live Weather</h3>
+
+            <p>
+              Get weather information for your destination before you travel.
+            </p>
+          </div>
+
+          {/* COUNTRY INFORMATION */}
+          <div className="feature-card">
+            <div>🌍</div>
+
+            <h3>Country Information</h3>
+
+            <p>
+              Explore country details, capitals, currencies and regions.
+            </p>
+          </div>
+
+          {/* LANGGRAPH */}
+          <div className="feature-card">
+            <div>🧠</div>
+
+            <h3>LangGraph Agent</h3>
+
+            <p>
+              Multi-step AI reasoning coordinates tools to answer travel
+              questions.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {/* FOOTER */}
+      <footer id="about">
+        <div>
+          <strong>✈ AI Travel Concierge</strong>
+
+          <p>Intelligent travel planning powered by AI.</p>
+        </div>
+
+        <p>
+          Built with Next.js • FastAPI • LangGraph • Gemini
+        </p>
+      </footer>
+    </main>
   );
 }
